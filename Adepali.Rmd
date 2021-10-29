@@ -1,0 +1,1065 @@
+---
+title: "TwoClass"
+author: "Anastasios Vlaikidis"
+date: "4/30/2021"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+### Libraries that we will use
+```{r,message=F,warning=F}
+library(readxl) # Read excel files
+library(caret)  # Machine Learning library
+library(dplyr)  # Data manipulation
+library(car)    # Strings to Factors
+library(UBL)    # SMOTE
+library(gmodels)# Tables
+library(visdat) # Missing visualizations
+library(vtreat) # Preprocess
+library(recipes)# Preprocess
+library(DMwR)   # SMOTE
+library(ranger) # C++ version of RandomForest
+library(rockchalk) # Combine levels of factors
+library(AtConP) # AVF algorithm for outliers
+```
+
+
+
+### Load the Dataset
+```{r}
+clearhistory <- function() {
+  write("", file=".blank")
+  loadhistory(".blank")
+  unlink(".blank")
+}
+clearhistory()
+rm(list = ls())
+```
+
+```{r}
+#SLD <- read_excel("SLD.xlsx")
+# SLD_original <- read_excel("SLD.xlsx")
+SLD_original <- read_excel("SleepAllData.xlsx")
+# commaSep_SLD<- read_excel("CommaSeperatedSLD.xlsx")
+# sneak peak of our data
+# knitr::kable(SLD_original[1:10,1:11])
+SLD <- SLD_original
+SLD <- select(SLD,-c(Q19,Q32,Q10,Q11))
+# SLD <- select(SLD,-c(Q19,Q32))
+```
+
+
+
+
+### Remove NA
+```{r eval=FALSE, include=FALSE}
+SLD <-SLD[complete.cases(SLD),]
+```
+
+```{r}
+# Remove rows with more than 95% NA
+SLD <- SLD[which(rowMeans(!is.na(SLD)) > 0.95),]
+```
+
+
+### Remove near zero var covariates
+```{r}
+bCols <- nearZeroVar(SLD,
+                    saveMetrics = T) 
+SLD <- SLD[,bCols$nzv==F]
+```
+
+
+### Data manipulation
+```{r}
+mutate(SLD, BMI = round(Q26/(Q27^2),1)) -> SLD
+```
+
+```{r}
+
+Group_BMI<-c(1:length(SLD$Q2))
+
+Group_BMI[SLD$BMI<18.5] <- "Underweight"
+Group_BMI[SLD$BMI>=18.5 & SLD$BMI<25] <- "HealthyWeight"
+Group_BMI[SLD$BMI>=25 & SLD$BMI<30] <- "Overweight"
+Group_BMI[SLD$BMI>=30] <- "Obese"
+
+Group_BMI<-factor(Group_BMI,
+                 levels = c("HealthyWeight",
+                            "Underweight",
+                            "Overweight",
+                            "Obese"))
+
+
+SLD$Q15 <- factor(SLD$Q15,
+                  levels = c(3,2,1,0),
+                  labels = c("VeryBad","Bad","Good","VeryGood"))
+
+SLD <- cbind(SLD,Group_BMI)
+# SLD[,1:16] <- lapply(SLD[,1:16],as.integer)
+SLD[,1:14] <- lapply(SLD[,1:14],as.integer)
+SLD <- as.data.frame(SLD)
+# SLD <- select(SLD,-c(Q26,Q27,BMI))
+```
+
+
+### AVF outliers
+```{r}
+SLD <- strings2factors(SLD) 
+# AVF <- df.AVF(SLD[,-30])
+AVF <- df.AVF(select(SLD,-c(Q15)))
+Q15 <- SLD$Q15
+AVF <-as.data.frame(cbind(AVF,Q15))
+# AVF <-as.data.frame(cbind(AVF,SLD$Q15))
+# names(AVF)[33] <-"Q15"
+summary(AVF$AVF_Score)
+lower_bound <- min(AVF$AVF_Score,na.rm = T)+0.02
+outlier_ind <- which(AVF$AVF_Score < lower_bound)
+out <- AVF[outlier_ind,]
+head(data.frame(out))
+SLD <- AVF[-outlier_ind,]
+# SLD <- AVF
+```
+
+
+
+
+
+### Data spliting
+```{r,warning=F}
+seed <- 1821
+set.seed(seed)
+ 
+idx <- sample(seq(1, 2), 
+                 size = nrow(SLD), 
+              replace = TRUE, 
+                 prob = c(.75, .25))
+
+training <- SLD[idx == 1,]
+testing  <- SLD[idx == 2,]
+```
+ 
+
+### AVF outliers 2
+```{r eval=FALSE, include=FALSE}
+training <- strings2factors(training) 
+AVF<- df.AVF(training)
+
+summary(AVF$AVF_Score)
+lower_bound <- 0.17
+outlier_ind <- which(AVF$AVF_Score < lower_bound)
+out <- AVF[outlier_ind,]
+head(data.frame(out))
+training <- AVF[-outlier_ind,]
+
+#############################################################################
+# testing
+
+testing <- strings2factors(testing) 
+AVF.test<- df.AVF(testing)
+
+summary(AVF.test$AVF_Score)
+lower_bound <- 0.20
+outlier_ind <- which(AVF.test$AVF_Score < lower_bound)
+out2 <- AVF.test[outlier_ind,]
+head(data.frame(out2))
+testing <- AVF.test[-outlier_ind,]
+# testing <- AVF.test
+
+```
+
+
+
+
+### Missing visuals
+```{r}
+vis_miss(training,
+         cluster = T)
+vis_miss(testing,
+         cluster = T)
+```
+
+
+ 
+### Imputation
+```{r}
+training <- strings2factors(training)
+testing  <- strings2factors(testing)
+
+# training
+rcp <- recipe(Q15 ~., data = training)
+
+imputed <- rcp %>%
+  step_impute_knn(everything(),
+                  neighbors = 13)
+
+
+trained_rec <- prep(imputed,
+                    training = training,
+                    strings_as_factors = T)
+
+
+training <- bake(trained_rec, 
+                new_data = training)
+
+############################################################################
+# testing
+rcp <- recipe(Q15 ~., data = testing)
+
+imputed <- rcp %>%
+  step_impute_knn(everything(),
+                  neighbors = 13)
+
+trained_rec <- prep(imputed,
+                    training = testing,
+                    strings_as_factors = T)
+
+testing <- bake(trained_rec,
+                new_data = testing)
+
+############################################################################
+
+training <- as.data.frame(training)
+testing  <- as.data.frame(testing)
+
+CrossTable(training$Q15)
+CrossTable(testing$Q15)
+
+```
+ 
+ 
+### More data manipulatiion
+```{r eval=FALSE, include=FALSE}
+# training
+table(training$Q15,useNA = "always")
+# 
+training$Q15 <-combineLevels(training$Q15,
+                  levs = c("VeryBad","Bad"),
+              newLabel = c("Bad"))
+
+
+training$Q15 <-combineLevels(training$Q15,
+                  levs = c("VeryGood","Good"),
+              newLabel = c("Good"))
+
+# training$Q15 <- relevel(training$Q15,ref = "G")
+
+
+
+
+table(training$Q15,useNA = "always")
+
+##############################################################################
+# testing
+
+table(testing$Q15,useNA = "always")
+
+testing$Q15 <-combineLevels(testing$Q15,
+                  levs = c("VeryBad","Bad"),
+              newLabel = c("Bad"))
+
+
+testing$Q15 <-combineLevels(testing$Q15,
+                  levs = c("VeryGood","Good"),
+              newLabel = c("Good"))
+
+# testing$Q15 <- relevel(testing$Q15,ref = "G")
+
+
+table(testing$Q15,useNA = "always")
+```
+
+
+ 
+ 
+### Methods for inbalanced datasets
+```{r}
+           temp <- SmoteClassif(Q15~.,
+                                dat = training,
+                             C.perc = list(VeryGood = 1.5,
+                                               Good = 1,
+                                                Bad = 1,
+                                            VeryBad = 6),
+                             # C.perc = "balance",
+
+                               dist = "HEOM",
+                                  k = 7)
+
+#############################################################################
+# beta = list( "VeryBad" = 3,
+#             "VeryGood" = 2,
+#             "Bad" = 1,
+#             "Good"= 1)
+# 
+#           temp <- AdasynClassif(Q15~.,
+#                                 dat = training,
+#                           baseClass = "Good",
+#                                dist = "HVDM",
+#                                   k = 5,
+#                           beta = 1.1,
+#                                # beta = list("VeryBad"  = 1.2,
+#                                #             "VeryGood" = 1.3),
+#                                 dth = 0.95)
+
+############################################################################
+            # temp <-RandOverClassif(Q15~.,
+            #                        dat = training,
+            #                     C.perc = "balance",
+            #                     # C.perc = list(VeryGood = 13,
+            #                     #                   Good = 5,
+            #                     #                    Bad = 8,
+            #                     #                VeryBad = 9
+            #                     #            ),
+            #                       repl = T)
+
+############################################################################
+#               temp <- WERCSClassif(Q15~., 
+#                                    dat = training,
+#                                 C.perc = "balance"
+                                # C.perc = list(VeryGood = 3,
+                                #                   Good = 1,
+                                #                    Bad = 1,
+                                #                VeryBad = 5
+                                #            ))
+
+############################################################################
+# List
+# temp <-CNNClassif(Q15~.,
+#                   dat = training,
+#                  dist = "HEOM",
+#                    Cl = "smaller")
+
+############################################################################# 
+# List
+# temp <-ENNClassif(Q15~.,
+#                  dat = training,
+#                 dist = "HEOM",
+#                    k = 5,
+#                   Cl = c("Good"))
+ 
+#############################################################################
+# temp <-GaussNoiseClassif(Q15~.,
+#                         dat = training,
+#                      # C.perc = "balance",
+#                      C.perc = list(VeryGood = 12,
+#                                        Good = 10,
+#                                         Bad = 10,
+#                                     VeryBad = 13),
+#                        pert = 0.1,
+#                        repl = F)
+
+#############################################################################
+
+# temp <-NCLClassif(Q15~.,
+#                   dat = training,
+#                     k = 5,
+#                    Cl = c("VeryBad",
+#                           "Bad",
+#                           "VeryGood"),
+#                  dist = "HEOM")
+
+##############################################################################
+# List
+# temp <-TomekClassif(Q15~.,
+#                   dat = training,
+#                    Cl = "smaller",
+#                  dist = "HEOM",
+#                 start = "CNN")
+
+##############################################################################
+# temp <-OSSClassif(Q15~.,
+#                   dat = training,
+#                    Cl = c("VeryBad",
+#                           "VeryGood"),
+#                  dist = "HEOM",
+#                 start = "CNN")
+
+##############################################################################
+# temp <-SMOGNClassif(Q15~.,
+#                   dat = training,
+#               # C.perc = "balance",
+#                   C.perc = list(VeryBad = 10,
+#                                 Bad = 3.9,
+#                                 Good = 1.5,
+#                                 VeryGood = 7),
+#                     k = 11,
+#                  repl = F,
+#                  pert = 0.01,
+#                  dist = "HVDM")
+
+#############################################################################
+
+
+
+ # SMOTED.training <- temp[[1]]
+SMOTED.training <- temp
+CrossTable(training$Q15)
+CrossTable(SMOTED.training$Q15)
+```
+ 
+ 
+ 
+### More data manipulation
+```{r eval=FALSE, include=FALSE}
+SLD <- strings2factors(SLD) 
+SLD[,1:16] <- lapply(SLD[,1:16],as.integer)
+  
+# SLD$Q15 <-factor(SLD$Q15,
+#                  levels = c(1,0,2,3),
+#                  labels = c("G","VG","B","VB"),
+#                  ordered = F)
+# SLD$Q15 <-ordered(SLD$Q15,
+#                   levels = c(0,1,2,3))
+SLD$Q15 <-as.integer(SLD$Q15)
+str(SLD)
+SLD <- as.data.frame(SLD)
+```
+
+```{r eval=FALSE, include=FALSE}
+SLD <- strings2factors(SLD) 
+SLD[,1:16] <- lapply(SLD[,1:16],
+                     function(x){
+                     factor(x,
+                     levels = c(0,1,2,3))})
+  
+SLD$Q15 <-factor(SLD$Q15,
+                  levels = c(0,1,2,3))
+str(SLD)
+SLD <- as.data.frame(SLD)
+```
+
+```{r}
+# training <- strings2factors(training)
+# testing  <- strings2factors(testing)
+
+# training[,1:16] <- lapply(training[,1:16],as.integer)
+# testing[,1:16] <- lapply(testing[,1:16],as.integer)
+# 
+# training$Q15 <-ordered(training$Q15,
+#                   levels = c(2,1),
+#                   labels = c("Bad","Good"))
+# 
+# testing$Q15 <-ordered(testing$Q15,
+#                   levels = c(2,1),
+#                   labels = c("Bad","Good"))
+# 
+# table(training$Q15,useNA = "always")
+#  table(testing$Q15,useNA = "always")
+
+
+# testing[,1:16] <- lapply(testing[,1:16],
+#                      function(x){
+#                      ordered(x,
+#                      levels = c(3,2,1,0))
+#                      }
+# )
+#   
+# training$Q15 <-ordered(training$Q15,
+#                   levels = c(3,2,1,0),
+#                   labels = c("VeryBad","Bad","Good","VeryGood"))
+# 
+# 
+# testing$Q15 <-ordered(testing$Q15,
+#                   levels = c(3,2,1,0),
+#                   labels = c("VeryBad","Bad","Good","VeryGood"))
+
+# testing$Q15 <-factor(testing$Q15,
+#                   levels = c("1","0","2","3"),
+#                   labels = c("G","VG","B","VB"))
+
+training$Q15 <- ordered(training$Q15)
+testing$Q15 <- ordered(testing$Q15)
+training <- as.data.frame(training)
+testing <- as.data.frame(testing)
+```
+
+```{r eval=FALSE, include=FALSE}
+# training
+table(training$Q19, useNA = "always")
+
+training$Q19 <-combineLevels(training$Q19,
+                     levs = c("SB","SRDB"),
+                 newLabel = c("SR"))
+
+table(training$Q19, useNA = "always")
+
+##########################################################################
+# testing
+table(testing$Q19, useNA = "always")
+
+testing$Q19 <-combineLevels(testing$Q19,
+                     levs = c("SB","SRDB"),
+                 newLabel = c("SR"))
+
+table(testing$Q19, useNA = "always")
+```
+
+
+
+### Preprocess
+```{r}
+rcp <- recipe(Q15 ~.,
+              data = training)
+# 
+# imputed <- rcp %>%
+#   step_impute_knn(everything())
+
+
+standardized <- rcp %>%
+  step_center(all_numeric_predictors(),
+              # -c(Q5,Q6,Q7,Q8,Q9,Q10,Q11,Q12,Q13,
+              -c(Q5,Q6,Q7,Q8,Q9,Q12,Q13,
+                Q16,Q17,Q18,Q20,Q21,Q22,Q23)) %>%
+   step_scale(all_numeric_predictors(),
+              # -c(Q5,Q6,Q7,Q8,Q9,Q10,Q11,Q12,Q13,
+              -c(Q5,Q6,Q7,Q8,Q9,Q12,Q13,
+                Q16,Q17,Q18,Q20,Q21,Q22,Q23)) %>%
+  step_BoxCox(all_numeric_predictors(),
+              # -c(Q5,Q6,Q7,Q8,Q9,Q10,Q11,Q12,Q13,
+              -c(Q5,Q6,Q7,Q8,Q9,Q12,Q13,
+                Q16,Q17,Q18,Q20,Q21,Q22,Q23))
+  
+# ind_vars <- imputed %>%
+#   step_dummy(all_nominal_predictors())
+# 
+# 
+# 
+# rcp <- recipe(Q15 ~.,
+#               data = training)
+
+
+
+# standardized <- rcp %>%
+#    step_center(all_numeric_predictors()) %>%
+#    step_scale(all_numeric_predictors())  %>%
+#    step_YeoJohnson(all_numeric_predictors())
+#                 
+# trained_rec <- prep(standardized, 
+#                     training = training,
+#                     strings_as_factors = T)
+
+
+
+# standardized <- imputed %>%
+#   step_center(all_numeric_predictors()) %>%
+#    step_scale(all_numeric_predictors()) 
+  #step_BoxCox(all_numeric_predictors())
+
+
+# ind_vars <- standardized %>%
+#   step_dummy(all_nominal_predictors(),
+#              -c(Q5,Q6,Q7,Q8,Q9,Q10,Q11,Q12,Q13,
+#                 Q16,Q17,Q18,Q20,Q21,Q22,Q23))
+
+
+ind_vars <- standardized %>%
+  step_dummy(all_nominal_predictors())
+
+trained_rec <- prep(ind_vars,
+                    training = training,
+                    strings_as_factors = T)
+
+
+training_imputed_dummy <- bake(trained_rec, 
+                               new_data = training)
+
+testing_imputed_dummy  <- bake(trained_rec, 
+                               new_data = testing)
+
+
+training_imputed_dummy <- as.data.frame(training_imputed_dummy)
+testing_imputed_dummy  <- as.data.frame(testing_imputed_dummy)
+```
+
+
+
+```{r eval=FALSE, include=FALSE}
+SMOTED.training$Q19 <-combineLevels(SMOTED.training$Q19,
+                     levs = c("SB","SRDB"),
+                 newLabel = c("SR"))
+```
+
+```{r}
+SMOTED.training <- bake(trained_rec,new_data = SMOTED.training)
+```
+
+
+
+
+```{r eval=FALSE, include=FALSE}
+rcp <- recipe(Q15 ~ ., 
+              data = training)
+
+imputed <- rcp %>%
+  step_impute_knn(everything())
+
+
+standardized <- imputed %>%
+  step_center(all_numeric_predictors(),
+              -c(Q5,Q6,Q7,Q8,Q9,Q10,Q11,Q12,Q13,
+                Q16,Q17,Q18,Q20,Q21,Q22,Q23)) %>%
+   step_scale(all_numeric_predictors(),
+              -c(Q5,Q6,Q7,Q8,Q9,Q10,Q11,Q12,Q13,
+                Q16,Q17,Q18,Q20,Q21,Q22,Q23)) %>%
+  step_BoxCox(all_numeric_predictors(),
+                  -c(Q5,Q6,Q7,Q8,Q9,Q10,Q11,Q12,Q13,
+                Q16,Q17,Q18,Q20,Q21,Q22,Q23))
+
+
+trained_rec <- prep(standardized, 
+                    training = training,
+                    strings_as_factors = T)
+
+testing_imputed_dummy <- bake(trained_rec, 
+                               new_data = training)
+
+testing_imputed_dummy  <- bake(trained_rec, 
+                               new_data = testing)
+
+training_imputed_dummy <- as.data.frame(training_imputed_dummy)
+testing_imputed_dummy <- as.data.frame(testing_imputed_dummy)
+```
+
+
+### Vtreat
+```{r}
+# SLD_new <-design_missingness_treatment(SLD)
+# SLD_new <-vtreat::prepare(SLD_new,SLD)
+# SLD_new <- training
+# seed <- 1821
+# set.seed(seed)
+#  
+# idx <- sample(seq(1, 2), 
+#                  size = nrow(SLD_new), 
+#               replace = TRUE, 
+#                  prob = c(.75, .25))
+# 
+# training <- SLD_new[idx == 1,]
+# testing  <- SLD_new[idx == 2,]
+# 
+#  rcp <- recipe(Q15~.,data = training)
+# # # imputed <- rcp %>%
+# # #   step_impute_knn(everything())
+# # 
+# standardized <- rcp %>%
+#   step_impute_knn(everything(),neighbors = 7) %>%
+#   # step_dummy(all_nominal_predictors())%>%
+#   step_center(all_numeric_predictors()) %>%
+#   step_scale(all_numeric_predictors()) 
+#   # step_ica(all_numeric_predictors())
+# 
+# 
+# # standardized <- rcp %>%
+# #   step_center(all_numeric_predictors(),
+# #               # -c(Q5,Q6,Q7,Q8,Q9,Q10,Q11,Q12,Q13,
+# #               -c(Q5,Q6,Q7,Q8,Q9,Q12,Q13,
+# #                 Q16,Q17,Q18,Q20,Q21,Q22,Q23)) %>%
+# #    step_scale(all_numeric_predictors(),
+# #               # -c(Q5,Q6,Q7,Q8,Q9,Q10,Q11,Q12,Q13,
+# #               -c(Q5,Q6,Q7,Q8,Q9,Q12,Q13,
+# #                 Q16,Q17,Q18,Q20,Q21,Q22,Q23)) %>%
+# #   step_BoxCox(all_numeric_predictors(),
+# #                   # -c(Q5,Q6,Q7,Q8,Q9,Q10,Q11,Q12,Q13,
+# #               -c(Q5,Q6,Q7,Q8,Q9,Q12,Q13,
+#                 # Q16,Q17,Q18,Q20,Q21,Q22,Q23))
+# 
+# 
+# trained_rec <- prep(standardized,
+#                     training = training,
+#                     strings_as_factors = T)
+# 
+# 
+# trained <- bake(trained_rec,new_data = training)
+# tested  <- bake(trained_rec,new_data = testing)
+
+
+vars <- setdiff(colnames(trained),c("Q15"))
+outcome <- "Q15"
+
+
+
+unpack[
+    transform = treat_m,      # treatment plan
+   d_prepared = cross_frame,  # treated testing data
+  score_frame = score_frame
+]<-vtreat::mkCrossFrameMExperiment(
+                              trained,
+                              vars,
+                              outcomename = outcome
+                            #  outcometarge = yTarget,
+                             # parallelCluster = cl
+)
+
+
+daTrain.vtreat <- d_prepared
+daTest.vtreat  <- vtreat::prepare(transform,tested)
+# daTrain <- d_prepared
+# daTest  <- vtreat::prepare(transform,tested)
+```
+
+
+```{r eval=FALSE, include=FALSE}
+d_prepared %.>%
+  head(.)  %.>%
+  knitr::kable(.)
+```
+
+
+```{r eval=FALSE, include=FALSE}
+# only show a subset of columns
+cols = c("origName","varName","code","rsq","sig","outcome_level",
+         "default_threshold","recommended")
+knitr::kable(score_frame[,cols])
+```
+
+
+```{r}
+good_new_variables <- unique(score_frame[score_frame[["recommended"]],
+                             "varName",
+                              drop = T])
+good_new_variables 
+# daTrain <- d_prepared
+```
+
+
+
+### Control
+```{r}
+ctrl <- trainControl( method  = "repeatedcv",
+                      number  = 10,
+                      repeats = 3
+                   # classProbs = TRUE 
+             # savePredictions = T,
+                     # sampling = "up"
+)
+```
+
+
+
+
+### SMOTE 2
+```{r eval=FALSE, include=FALSE}
+ SMOTEd.SLD <- SMOTE(Q15 ~.,
+                          training_imputed_dummy,
+                          perc.over = 600,
+                                  k = 5)
+                         #perc.under = 100)
+CrossTable(training_imputed_dummy$Q15)
+CrossTable(SMOTEd.SLD$Q15)
+```
+
+
+
+
+
+
+
+
+
+### Ranger 
+```{r}
+# train.ranger <- daTrain.vtreat
+# test.ranger <- daTest.vtreat
+# train.ranger$Q15 <- ordered(train.ranger$Q15)
+# test.ranger$Q15  <- ordered(test.ranger$Q15)
+##########################################################################
+#metric <- "Accuracy"
+#metric <-"RMSE"
+#metric <-"Kappa"
+##########################################################################
+# train.ranger <- training_imputed_dummy
+test.ranger  <- testing_imputed_dummy
+#######################################################################
+train.ranger <- SMOTED.training
+
+###########################################################################
+#model_vars <-score_frame$varName # to use all variables
+#model_vars <- good_new_variables
+# daTrain$Q15 <- ordered(daTrain$Q15,
+#                        levels = c(3,2,1,0),
+#                        labels = c("VB","B","G","VG"))
+# train.ranger$Q15 <- ordered(train.ranger$Q15)
+###########################################################################
+
+
+#Compute weights to balance the RF
+#weights = (1:100)/100
+
+
+seed <- 1821
+set.seed(seed)
+
+n_features <- length(setdiff(names(train.ranger),"Q15"))
+reps <- floor(n_features/3)
+
+# create hyperparameter grid
+hyper_grid <- expand.grid(
+             mtry = floor(n_features * c(.05, .15, .25, .333, .4)),
+             #mtry = seq(2,n_features,1),
+    min.node.size = c(1, 3, 5, 10),
+          replace = c(TRUE, FALSE),
+  sample.fraction = c(.5, .63, .8),
+             rmse = NA
+)
+
+weights <- ifelse(train.ranger$Q15 =="VeryBad",
+                  1/table(train.ranger$Q15)[1]*0.25,
+                  ifelse(train.ranger$Q15 =="Bad",
+
+                  1/table(train.ranger$Q15)[2]*0.25,
+                  ifelse(train.ranger$Q15 =="Good",
+
+                  1/table(train.ranger$Q15)[3]*0.25,
+                  1/table(training_imputed_dummy$Q15)[4]*0.25)))
+
+  
+  
+  
+# execute full cartesian grid search
+for(i in seq_len(nrow(hyper_grid)))
+{
+# fit model for ith hyperparameter combination
+ fit.ranger <- ranger(
+                       formula = Q15~.,
+                          data = train.ranger,
+                     num.trees = n_features*10,
+                    #num.trees = 2000,
+                          mtry = hyper_grid$mtry[i],
+                 min.node.size = hyper_grid$min.node.size[i],
+                      replace  = hyper_grid$replace[i],
+               sample.fraction = hyper_grid$sample.fraction[i],
+                       verbose = FALSE,
+                          seed = seed,
+                    importance = "impurity_corrected",
+                 #write.forest = T,
+                #  case.weights = weights,
+                # class.weights = c(0.333,1.99,0.144,1-0.144),
+     respect.unordered.factors = "order")
+# export OOB error
+hyper_grid$rmse[i]<-sqrt(fit.ranger$prediction.error)
+}
+
+min(hyper_grid$rmse)
+
+
+# default ranger model
+fit.ranger.default <- ranger(
+                             Q15 ~.,
+                             data = train.ranger,
+                             mtry = reps,
+                        num.trees = 500,
+        respect.unordered.factors = "order",
+                             seed = seed
+)
+
+(default_rmse <- sqrt(fit.ranger.default$prediction.error))
+
+
+# assess top 10 models
+# hyper_grid %>%
+#    arrange(rmse) %>%
+#    mutate(perc_gain = (default_rmse - rmse) / default_rmse * 100) %>%
+#    head(10)
+######
+reps <-hyper_grid$mtry[which.min(hyper_grid$rmse)]
+
+
+fit.ranger.tuned <- ranger(
+                            Q15~.,
+                           data = train.ranger,
+                           mtry = reps,
+                      num.trees = 2763,
+                  min.node.size = hyper_grid$min.node.size[reps],
+                  # min.node.size = 6,
+                       replace  = hyper_grid$replace[reps],
+             sample.fraction = hyper_grid$sample.fraction[reps],
+                        verbose = FALSE,
+                     importance = "impurity_corrected",
+      respect.unordered.factors = "order",
+                   # case.weights = weights, 
+                   # class.weights = c(0.333,1.99,0.144,1-0.144),
+                   # class.weights = c(2000,0.12,3.9,1000),
+      # class.weights = weights,
+                           seed = seed
+)
+
+
+
+# fit.ranger.tuned <- ranger(
+#                            factor(Q15)~.,
+#                            data = train.ranger,
+#                            mtry = reps,
+#                       num.trees = 1500,
+#                   min.node.size = hyper_grid$min.node.size[reps],
+#                        replace  = hyper_grid$replace[reps],
+#                 sample.fraction = hyper_grid$sample.fraction[reps],
+#                         verbose = FALSE,
+#                      importance = "impurity",
+#       respect.unordered.factors = "order",
+#                            seed = seed
+# )
+```
+
+
+```{r eval=FALSE, include=FALSE}
+# re-run model with impurity-based variable importance
+rf_impurity <- ranger(
+  formula = Sale_Price ~ ., 
+  data = ames_train, 
+  num.trees = 2000,
+  mtry = 32,
+  min.node.size = 1,
+  sample.fraction = .80,
+  replace = FALSE,
+  importance = "impurity",
+  respect.unordered.factors = "order",
+  verbose = FALSE,
+  seed  = 123
+)
+
+# re-run model with permutation-based variable importance
+rf_permutation <- ranger(
+  formula = Sale_Price ~ ., 
+  data = ames_train, 
+  num.trees = 2000,
+  mtry = 32,
+  min.node.size = 1,
+  sample.fraction = .80,
+  replace = FALSE,
+  importance = "permutation",
+  respect.unordered.factors = "order",
+  verbose = FALSE,
+  seed  = 123
+)
+```
+
+
+
+### Fit a model
+```{r eval=FALSE, include=FALSE}
+ metric <- "Accuracy"
+#metric <-"RMSE"
+#metric <-"Kappa"
+# metric <-"ROC"
+daTrain <- training_imputed_dummy
+daTest  <- testing_imputed_dummy
+# daTrain <- SMOTED.training
+# daTest  <- daTest.vtreat
+# daTrain <- daTrain.vtreat
+
+
+
+seed<-1821
+set.seed(seed)
+
+# model_vars <-score_frame$varName # to use all variables
+#model_vars <- good_new_variables
+grid.rf <- expand.grid(mtry = c(reps))
+
+
+fit.rf<-train(Q15~.,
+              #train(x = daTrain[,-1],y = daTrain[,1],
+                # train(
+                 #       x = as.matrix(daTrain[,model_vars,drop = F]),
+                     #  x = daTrain[,-length(daTrain)],
+                      # y = daTrain[,1],  
+                  #      y = daTrain[["Q15"]],
+                    data = daTrain,
+                  method = "rf",
+                  #family ="multinomial",
+                  metric = metric,
+               trControl = ctrl,
+                #tuneGrid = grid.rf,
+              tuneLength = 5,
+                   ntree = 10,
+               # num.trees = 1000,
+              
+              # weights = weights,
+  respect.unordered.factors = "order",
+              # importance = "permutation",
+          min.node.size = hyper_grid$min.node.size[reps],
+               replace  = hyper_grid$replace[reps],
+        sample.fraction = hyper_grid$sample.fraction[reps]
+              # preProcess = c("corr","nzv")
+         
+               # na.action = na.omit)
+                #"center",
+                             #"scale",
+                            # "YeoJohnson",
+                             #"nzv",
+                             #"corr",
+                             #"range"),
+                         # ),
+              # na.action = na.omit
+        #  parallelCluster = cl,
+#                  verbose = F,
+ #       na.action = na.omit
+)
+```
+
+
+
+
+### Ranger model
+```{r}
+print(fit.ranger.tuned)
+```
+
+
+### Predictions Ranger
+```{r}
+pred <- predict(fit.ranger.tuned,
+                data = test.ranger)
+# table(daTest$Q15, pred$predictions)
+confusionMatrix(pred$predictions,
+                test.ranger$Q15)
+
+# confusionMatrix(pred$predictions,
+#                 factor(daTest$Q15))
+```
+
+
+### Var importance Ranger
+```{r}
+# p1 <- vip::vip(rf_impurity, num_features = 25, bar = FALSE)
+# p2 <- vip::vip(rf_permutation, num_features = 25, bar = FALSE)
+# gridExtra::grid.arrange(p1, p2, nrow = 1)
+p3 <- vip::vip(fit.ranger.tuned, 
+               num_features = 25,
+                        bar = F)
+p3
+```
+
+
+
+### RandomForest model
+```{r eval=FALSE, include=FALSE}
+print(fit.rf)
+fit.rf$finalModel
+```
+
+
+### Predictions Random Forest
+```{r eval=FALSE, include=FALSE}
+pred1 <- predict(fit.rf,
+                 newdata = daTest,
+                 type = "raw")
+
+confusionMatrix(pred1, daTest$Q15)
+
+# confusionMatrix(pred1,
+#                  factor(daTest$Q15))
+```
+
+
+
+### Var importance for Random Forest
+```{r eval=FALSE, include=FALSE}
+#plot(fit.rf)
+var.imp<-varImp(fit.rf)
+plot(var.imp,top = 25)
+```
+
+
+
