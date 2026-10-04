@@ -1,0 +1,165 @@
+---
+title: "COVID-19 and Sleep Quality Classification"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(tidymodels)
+library(ranger)
+tidymodels_prefer()
+```
+
+## Data import
+
+Place the original workbook at `data/SleepAllData.xlsx`.
+
+```{r}
+set.seed(1821)
+
+data_path <- file.path("data", "SleepAllData.xlsx")
+if (!file.exists(data_path)) {
+  stop("Missing data/SleepAllData.xlsx. See data/README.md for the expected file.")
+}
+
+sleep_raw <- read_excel(data_path) %>%
+  select(-any_of(c("Q19", "Q32", "Q10", "Q11")))
+
+required_columns <- c("Q15", "Q26", "Q27")
+missing_required <- setdiff(required_columns, names(sleep_raw))
+if (length(missing_required) > 0) {
+  stop("Missing required columns: ", paste(missing_required, collapse = ", "))
+}
+```
+
+## Deterministic feature engineering
+
+BMI is calculated from the source height/weight fields using the original project definition. Rows with missing target values are excluded. A row-level completeness filter is applied before splitting because it depends only on each row's own observed values, not on distribution estimates learned from other observations.
+
+```{r}
+sleep_data <- sleep_raw %>%
+  mutate(
+    BMI = if_else(
+      !is.na(Q26) & !is.na(Q27) & Q27 > 0,
+      round(Q26 / (Q27^2), 1),
+      NA_real_
+    ),
+    Group_BMI = case_when(
+      BMI < 18.5 ~ "Underweight",
+      BMI < 25 ~ "HealthyWeight",
+      BMI < 30 ~ "Overweight",
+      BMI >= 30 ~ "Obese",
+      TRUE ~ NA_character_
+    ),
+    Q15 = factor(
+      Q15,
+      levels = c(3, 2, 1, 0),
+      labels = c("VeryBad", "Bad", "Good", "VeryGood")
+    )
+  ) %>%
+  filter(!is.na(Q15)) %>%
+  filter(rowMeans(!is.na(.)) > 0.95) %>%
+  mutate(across(where(is.character), factor))
+
+table(sleep_data$Q15)
+```
+
+## Stratified train/test split
+
+The split occurs before near-zero-variance filtering, imputation or any other learned preprocessing.
+
+```{r}
+set.seed(1821)
+sleep_split <- initial_split(sleep_data, prop = 0.75, strata = Q15)
+sleep_train <- training(sleep_split)
+sleep_test <- testing(sleep_split)
+```
+
+## Leakage-safe preprocessing recipe
+
+The recipe is estimated separately inside every resample during tuning. The held-out test set is never used to determine near-zero-variance columns or imputation values.
+
+```{r}
+sleep_recipe <- recipe(Q15 ~ ., data = sleep_train) %>%
+  step_nzv(all_predictors()) %>%
+  step_unknown(all_nominal_predictors(), new_level = "unknown") %>%
+  step_novel(all_nominal_predictors(), new_level = "new") %>%
+  step_impute_median(all_numeric_predictors()) %>%
+  step_impute_mode(all_nominal_predictors())
+```
+
+## Ranger Random Forest
+
+```{r}
+rf_spec <- rand_forest(
+  trees = 1000,
+  mtry = tune(),
+  min_n = tune()
+) %>%
+  set_engine("ranger", importance = "permutation") %>%
+  set_mode("classification")
+
+rf_workflow <- workflow() %>%
+  add_recipe(sleep_recipe) %>%
+  add_model(rf_spec)
+
+set.seed(1821)
+folds <- vfold_cv(sleep_train, v = 5, strata = Q15)
+
+rf_parameters <- extract_parameter_set_dials(rf_workflow) %>%
+  finalize(sleep_train)
+
+set.seed(1821)
+rf_grid <- grid_latin_hypercube(rf_parameters, size = 15)
+
+set.seed(1821)
+rf_tuning <- tune_grid(
+  rf_workflow,
+  resamples = folds,
+  grid = rf_grid,
+  metrics = metric_set(accuracy, kap)
+)
+
+collect_metrics(rf_tuning)
+```
+
+## Final held-out evaluation
+
+The best hyperparameters are chosen from training resamples only. `last_fit()` then fits the complete workflow on the training partition and evaluates once on the untouched test partition.
+
+```{r}
+best_rf <- select_best(rf_tuning, metric = "accuracy")
+final_workflow <- finalize_workflow(rf_workflow, best_rf)
+
+set.seed(1821)
+final_fit <- last_fit(
+  final_workflow,
+  split = sleep_split,
+  metrics = metric_set(accuracy, kap)
+)
+
+collect_metrics(final_fit)
+```
+
+```{r}
+heldout_predictions <- collect_predictions(final_fit)
+conf_mat(heldout_predictions, truth = Q15, estimate = .pred_class)
+```
+
+## Why the legacy workflow is archived
+
+The original exploratory analysis fitted K-nearest-neighbour imputation separately on the test set, calculated some filtering/outlier decisions before the split and indexed Ranger tuning results with an `mtry` value as though it were a row number. It also labelled the square root of Ranger's classification error as RMSE. Those choices are not used in this audited workflow.
+
+SMOTE and AVF experimentation are intentionally omitted from the baseline. They can be reintroduced later only inside training resamples, where they cannot influence the held-out set.
+
+## Scope
+
+This is an academic machine-learning project. It is not a sleep-disorder diagnostic tool and its results should not be used for clinical decisions.
+
+## Session information
+
+```{r}
+sessionInfo()
+```
