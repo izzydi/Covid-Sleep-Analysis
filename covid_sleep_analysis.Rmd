@@ -6,7 +6,6 @@ output: html_document
 ```{r setup, include=FALSE}
 library(readxl)
 library(dplyr)
-library(ggplot2)
 library(tidymodels)
 library(ranger)
 tidymodels_prefer()
