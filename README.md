@@ -11,13 +11,20 @@ An R-based machine-learning project exploring multi-class sleep-quality classifi
 - [`covid_sleep_analysis.Rmd`](covid_sleep_analysis.Rmd) — audited R Markdown workflow.
 - [`archive/legacy_exploration.Rmd`](archive/legacy_exploration.Rmd) — original experimental coursework.
 - [`data/README.md`](data/README.md) — expected workbook layout.
-- [`R-packages.txt`](R-packages.txt) — direct R dependencies.
+- [`R-packages.txt`](R-packages.txt) — version-pinned direct R dependencies.
+- [`.github/workflows/r-ci.yml`](.github/workflows/r-ci.yml) — R 4.6.1 dependency and syntax CI.
 
 ## Audit improvements
 
 The legacy workflow fitted KNN imputation separately on the test set, made several data-dependent decisions before splitting and contained a Ranger hyperparameter-indexing bug. It also treated the square root of classification error as RMSE. Those choices are removed from the primary workflow.
 
-The audited version deliberately starts with a simpler leakage-safe Random Forest baseline. SMOTE, AVF and other experimental imbalance/outlier methods can be reintroduced only if they are applied inside training resamples.
+The current workflow keeps near-zero-variance filtering and imputation inside the resampled recipe, uses `grid_space_filling()` rather than the deprecated Latin-hypercube helper, and reserves the test split for one final `last_fit()` evaluation. SMOTE, AVF and other experimental imbalance/outlier methods are intentionally omitted from the baseline unless they can be applied inside training resamples.
+
+## Reproducibility and CI
+
+The direct R package versions are pinned in [`R-packages.txt`](R-packages.txt). GitHub Actions uses R 4.6.1 and `pak` to install those exact direct package versions, then extracts and parses the canonical R Markdown source on every push and pull request.
+
+`R-packages.txt` is a direct-dependency manifest rather than a complete `renv.lock` snapshot; recursive dependency resolution is handled by `pak`.
 
 ## Data
 
@@ -25,9 +32,16 @@ The source workbook is external and is not committed. Place `SleepAllData.xlsx` 
 
 ## Reproducing the analysis
 
-1. Add the workbook under `data/`.
-2. Install packages listed in [`R-packages.txt`](R-packages.txt).
-3. Run or knit `covid_sleep_analysis.Rmd` from top to bottom.
+1. Install R 4.6.1.
+2. Add the workbook under `data/`.
+3. Install `pak` and the pinned direct dependencies:
+
+```r
+install.packages("pak")
+pak::pkg_install(readLines("R-packages.txt"), upgrade = FALSE)
+```
+
+4. Run or knit `covid_sleep_analysis.Rmd` from top to bottom.
 
 ## Scope
 
