@@ -112,7 +112,7 @@ rf_parameters <- extract_parameter_set_dials(rf_workflow) %>%
   finalize(sleep_train)
 
 set.seed(1821)
-rf_grid <- grid_latin_hypercube(rf_parameters, size = 15)
+rf_grid <- grid_space_filling(rf_parameters, size = 15)
 
 set.seed(1821)
 rf_tuning <- tune_grid(
