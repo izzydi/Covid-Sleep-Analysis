@@ -1,5 +1,4 @@
 readxl@1.5.0.1
 dplyr@1.2.1
-ggplot2@4.0.3
 tidymodels@1.5.0
 ranger@0.18.0
