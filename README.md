@@ -8,22 +8,13 @@ The source analysis implements a substantial preprocessing and modelling workflo
 
 ## Repository contents
 
-- [`Adepali.Rmd`](Adepali.Rmd) — complete R Markdown analysis.
+- [`covid_sleep_analysis.Rmd`](covid_sleep_analysis.Rmd) — complete R Markdown analysis.
 
 ## Methods and tools
 
 The workflow uses packages including `caret`, `dplyr`, `recipes`, `ranger`, `visdat`, `UBL`, `DMwR`, `vtreat` and `AtConP`.
 
-Key steps include:
-
-- data cleaning and removal of near-zero-variance predictors,
-- BMI calculation and grouping,
-- sleep-quality target recoding,
-- AVF-based outlier detection,
-- train/test splitting,
-- missing-data visualization,
-- KNN imputation,
-- preparation for supervised classification.
+Key steps include data cleaning, removal of near-zero-variance predictors, BMI calculation and grouping, target recoding, AVF-based outlier detection, train/test splitting, missing-data visualization, KNN imputation and supervised-classification preparation.
 
 ## Data requirements
 
@@ -31,8 +22,8 @@ The R Markdown file expects an external Excel dataset named `SleepAllData.xlsx`,
 
 ## Reproducing the analysis
 
-1. Place `SleepAllData.xlsx` in the working directory.
-2. Open `Adepali.Rmd` in RStudio.
+1. Place `SleepAllData.xlsx` in the project directory.
+2. Open `covid_sleep_analysis.Rmd` in RStudio.
 3. Install the packages listed near the top of the file.
 4. Run or knit the analysis.
 
